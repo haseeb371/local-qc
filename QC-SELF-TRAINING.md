@@ -1,4 +1,4 @@
-# QC Self-Training — 12 Findings I Missed on law-b39
+# QC Self-Training — 13 Findings I Missed on law-b39
 
 **Lesson date:** 2026-09-17
 **Task:** law-b39-l16-custody-letter-instruction-audit
@@ -238,6 +238,32 @@ grep -E "python.*compute|pandas|calculate" solve.sh  # real work
 
 ---
 
+### FINDING 13 — Golden trajectory contradicts gold results
+**Portal ID:** `D21.notes_contradict_runs` (Client PreQC deterministic)
+**What the portal found:** `solution/golden_trajectory.json` step 7 writes `results.json` with old counts (verified=17, at_odds=18, not_in_record=7, clarification_governed=15) while the actual `solution/files/results.json` has (87/154/49/168). The trajectory was never updated after densification.
+**Why I missed it:** I read solve.sh and saw it copies pre-computed gold + emits trajectory from golden_trajectory.json. But I never checked whether the EMBEDDED results.json in the trajectory MATCHES the current gold results.json.
+**The check I must run:**
+```
+1. Read golden_trajectory.json
+2. Find the step that writes results.json (or answer.md, or letter_line_review.csv)
+3. Compare the embedded counts to solution/files/results.json
+4. If they differ → trajectory contradicts gold → FAIL
+5. This is a deterministic P0 — the portal's D21 check catches it automatically
+```
+**Detection pattern:**
+```python
+import json
+traj = json.load(open('solution/golden_trajectory.json'))
+for step in traj:
+    cmd = step.get('arguments', {}).get('command', '')
+    if 'results.json' in cmd and 'verified_count' in cmd:
+        # Extract the embedded JSON from the heredoc
+        # Compare to solution/files/results.json
+        # If counts differ → CONTRADICTION
+```
+
+---
+
 ## THE 7-LAYER CHECK I MUST RUN EVERY TIME
 
 ### Layer 0 — Read the content (5 min)
@@ -268,6 +294,9 @@ grep -E "python.*compute|pandas|calculate" solve.sh  # real work
 - [ ] Read solve.sh — does it copy pre-computed gold or compute the answer?
 - [ ] Does any non-Oracle model run score 1.0?
 - [ ] If solve.sh is replay AND no model 1.0 → solvability FAIL (not waivable)
+- [ ] Read golden_trajectory.json — does the embedded results.json match solution/files/results.json? (Finding 13)
+- [ ] Does the embedded answer.md have the correct at-odds figure?
+- [ ] Does the embedded letter_line_review.csv have the correct row count and verdicts?
 
 ### Layer 5 — Stability evidence (2 min)
 - [ ] Do repeat folders carry per-check evidence (score.json/ctrf.json/artifacts)?
@@ -330,6 +359,7 @@ grep -E "python.*compute|pandas|calculate" solve.sh  # real work
 - README says "hand-authored reference trajectory" → the golden trajectory is not earned by work
 - Duplicated sentences in the data → densification broke realism
 - "wording is X" placeholder text → synthetic, not a real letter
+- golden_trajectory.json embeds old counts that differ from solution/files/results.json → trajectory contradicts gold
 
 ---
 
