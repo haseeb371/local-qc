@@ -1,4 +1,4 @@
-# QC Self-Training — 15 Findings I Missed on law-b39
+# QC Self-Training — 16 Findings I Missed on law-b39
 
 **Lesson date:** 2026-09-17
 **Task:** law-b39-l16-custody-letter-instruction-audit
@@ -287,6 +287,20 @@ for step in traj:
 3. Count the embedded data rows
 4. Compare to solution/files/letter_line_review.csv row count
 5. If they differ → trajectory CSV is stale → FAIL
+```
+
+---
+
+### FINDING 16 — Oracle trajectory shows stale counts (run before gold update)
+**What I found:** The oracle trajectory's embedded results.json shows `104/177/44/162` but the current gold has `100/181/44/202`. The oracle was run BEFORE golden_trajectory.json was updated. The oracle artifacts/app/ has the correct gold (100/181/44/202) because solve.sh copies solution/files/ at run time. But the trajectory was emitted from the old golden_trajectory.json.
+**Why I missed it:** I checked the golden_trajectory.json file itself (Finding 13) but never checked the ORACLE'S trajectory.json to see if it matches the current golden_trajectory.json.
+**The check I must run:**
+```
+1. Read evaluations/oracle/agent/trajectory.json
+2. Find the step that writes results.json
+3. Compare the embedded counts to solution/files/results.json
+4. If they differ → oracle was run with a stale golden_trajectory → re-oracle needed
+5. Also check: do the oracle artifacts/app/results.json match the gold? (they will if solve.sh copies solution/files/)
 ```
 
 ---
