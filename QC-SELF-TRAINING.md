@@ -1,4 +1,4 @@
-# QC Self-Training — 35 Findings (law-b39 + h34 + h40)
+# QC Self-Training — 40 Findings (law-b39 + h34 + h40)
 
 **Lesson date:** 2026-09-17
 **Task:** law-b39-l16-custody-letter-instruction-audit
@@ -586,3 +586,33 @@ fetch('/trainer/api/run', {method: 'POST', headers: {'Content-Type': 'applicatio
 fetch('/trainer/api/runs').then(r => r.json()).then(d => d.gates['content-xxx-v4'])
 ```
 The 409 error on mode='qc_oracle_glm' was wrong — the correct mode is 'delivery'. The 409 on mode='delivery' means PreQC has blocking findings that must be fixed first.
+
+### FINDING 36 — Harbor Check: keyword-presence findings checks accept wrong content (reward_hacking)
+**Local QC:** h34 v5
+**What:** Harbor Check blocker `layer5_reward_hacking_static`: A hollow findings.md with only subject IDs and scattered keywords ("sequence tolerance drift B1 not_assessed B3 within_tolerance amendment ledger reconciled applied") earned reward=1.0. The findings checks were regex keyword-presence tests that accept ANY block ID near a keyword — "B3 within_tolerance" passes even though B3 IS within and the check is supposed to verify the CORRECT deviating blocks.
+**Fix:** Replace ALL keyword-presence findings regexes in verifier.json with Python assertions that verify: (a) the CORRECT outside-tolerance strata (S3, severe), (b) the CORRECT deviating blocks (B21, B12, B13, B8), (c) the CORRECT within-tolerance blocks. Move ALL .md regex checks to test_outputs.py Python assertions — PreQC flags ANY regex_match on .md files as D1 blocking.
+
+### FINDING 37 — Harbor Check: test.sh pytest workspace import hijack (state_spoofing)
+**Local QC:** h34 v5
+**What:** Harbor Check blocker `layer5_reward_hacking_static__state_spoofing`: tests/test.sh:12 runs `python3 -m pytest` with cwd /app (agent-writable) and no -I flag. An agent can write a fake pytest.py in /app and earn reward 1.0 without grading.
+**Fix:** Change `python3 -m pytest` to `python3 -I -m pytest` in test.sh. The -I flag isolates the import path so the agent workspace is not on sys.path.
+
+### FINDING 38 — Harbor Check: undeclared pytest tests (verifier_execution_completeness)
+**Local QC:** h34 v5
+**What:** Harbor Check blocker `layer5_verifier_fairness_static__verifier_execution_completeness`: verifier.json declares 40 checks but test.sh runs 45 (40 parametrized + 5 standalone recompute tests). The 5 standalone tests are undeclared reward-bearing checks.
+**Fix:** The declared count in verifier.json must match the pytest collection count. Either (a) declare the standalone tests as entries in verifier.json, or (b) fold the standalone test logic into the parametrized checks. The cleanest approach: remove standalone tests from test_outputs.py and declare all checks in verifier.json, OR keep standalone tests but also declare them as verifier.json entries.
+
+### FINDING 39 — Harbor Check: duplicate checks penalize one mistake twice (check_independence)
+**Local QC:** h34 v5
+**What:** Harbor Check blocker `layer5_verifier_fairness_static__check_independence`: A single wrong cell (S1 subjects 69→70) fails TWO checks: the declared per-cell check AND the recompute test. Both read the same row and assert the same value. One mistake costs 2/45.
+**Fix:** Either remove the per-cell count checks from verifier.json (the recompute tests already check them), or remove the recompute tests (the per-cell checks already check them). Each underlying fact should be checked ONCE.
+
+### FINDING 40 — Harbor Check: block status checks accept fabricated counts (surface_form_brittleness)
+**Local QC:** h34 v5
+**What:** Harbor Check blocker `layer5_verifier_fairness_static__surface_form_brittleness`: Block checks like `block_b3_within_tolerance` match only a status keyword after the block ID, not the subjects/active/counts. A row "S1,B3,999,0,999,within_tolerance" passes the declared check.
+**Fix:** Block checks must also assert the correct subjects, active, and control counts for each block row, not just the status keyword. The recompute test (test_block_balance_recomputes_from_allocations) already does this — so either (a) remove the keyword-only block checks and rely on the recompute test, or (b) tighten the block check regexes to include count assertions.
+
+### FINDING 41 — h40 GLM 4/4 too easy — task inherently solvable by script-based approach
+**Local QC:** h40 v10
+**What:** Oracle PASS (1.0), GLM 4/4 (too easy — BLOCKED). 12+ data trap versions all failed — model writes correct Python reading all input files dynamically. Bank holiday traps, site core hours traps, alias traps, amendment window traps, seconds-in-timestamps, finding-precedence rules — all handled by GLM-5.2.
+**Fix:** Per All Hands guidance: "After two builds with no change, stop turning the same dial." h40 needs fundamental restructuring (not data changes) to trip GLM-5.2. Possible approaches: (a) make the procedure document ambiguous in a way the model misinterprets, (b) add contradictory amendments that require careful precedence resolution, (c) restructure the deliverable format to require manual reasoning rather than scriptable computation. Pass to partlets for spot checks per meeting guidance.
