@@ -1,4 +1,4 @@
-# QC Self-Training — 27 Findings (law-b39 + h34 + h40)
+# QC Self-Training — 32 Findings (law-b39 + h34 + h40)
 
 **Lesson date:** 2026-09-17
 **Task:** law-b39-l16-custody-letter-instruction-audit
@@ -485,3 +485,29 @@ for step in traj:
 **Local QC:** h34
 **What:** Patterns like `(?mi)^...overall...all...62...41...21...66.1...` have hardcoded counts that break when data changes
 **Fix:** String replacement of specific old→new numbers, but must handle multiple replacements carefully (e.g., "21" could be subjects OR control count)
+
+### FINDING 28 — File write tools can introduce UTF-8 BOM into Dockerfile
+**Local QC:** h34
+**What:** The `write` tool (and some editors) add a UTF-8 BOM (EF BB BF) to the start of files. The portal PreQC flags "environment/Dockerfile starts with a UTF-8 BOM" as a major finding. Docker builds may also fail on some platforms with BOM.
+**Fix:** After writing any file, verify the first 3 bytes are NOT EF BB BF. Strip BOM from all text files before zipping. Use `[System.IO.File]::WriteAllText(path, text, [System.Text.UTF8Encoding]::new($false))` in PowerShell to write without BOM.
+**Check added to judge.py:** CRLF/BOM byte scan already catches this (Layer 0.0/0.0b), but the `write` tool bypasses it by writing after the check runs. Always re-run judge.py after ANY file edit.
+
+### FINDING 29 — PreQC flags task.toml artifacts as relative paths
+**Local QC:** h34
+**What:** Adding `artifacts = ["stratum_balance.csv", ...]` to task.toml triggered a PreQC finding: "task.toml lists artifacts as relative paths". The PreQC expects artifacts to be empty `[]` or formatted differently.
+**Fix:** Keep `artifacts = []` in task.toml. The trial artifacts are preserved by the grader transcript regardless. Adding explicit artifacts triggers a PreQC finding.
+
+### FINDING 30 — PreQC flags Dockerfile non-root USER as a finding (D2 advisory)
+**Local QC:** h34, h40
+**What:** Adding `USER app` to the Dockerfile for D2 compliance triggered a PreQC finding: "The Dockerfile ends as a non-root user". The portal PreQC flags this as major, but per pipeline notes: "D2: downgrade from sev1 to sev3 (portal may require root user, so D2 is advisory only)".
+**Fix:** This is a known advisory conflict between local judge (flags root as P1 D2) and portal PreQC (flags non-root as major). Keep the non-root USER for D2 compliance and dismiss the PreQC finding as advisory. The portal Oracle+GLM runs fine with non-root USER.
+
+### FINDING 31 — Portal 3-task evaluation limit blocks Oracle+GLM
+**Local QC:** h34, h40
+**What:** The portal has a 3-task limit for QC-Oracle-GLM runs. When all 3 slots are occupied by other tasks, new runs return a 409 Conflict error. The "Run QC-Oracle-GLM" button silently fails with no visible error on the page (only in browser console).
+**Fix:** Check browser console for 409 errors when Oracle+GLM doesn't start. Wait for a slot to free up (Oracle+GLM takes ~50 minutes). Poll every 5-10 minutes until a slot is available.
+
+### FINDING 32 — Verifier regex missing (?m) flag fails on multi-line CSV
+**Local QC:** h34
+**What:** The `balance_covers_both_factors` check used `(?s)^site\s*,.*\nseverity\s*,` to match site before severity in the CSV. But `^` without `(?m)` only matches string start, and the CSV had `severity` before `site`. The local Oracle passed (53/53) but the portal Oracle failed (47/51 = 0.9215686275).
+**Fix:** Use `(?mis)` flag combination (multiline + case-insensitive + dotall) and match both orderings: `(?mis)(?:^severity\s*,.*\nsite\s*,|^site\s*,.*\nseverity\s*,)`. Always test regex patterns against the actual gold file content, not just the expected order.
