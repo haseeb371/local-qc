@@ -486,6 +486,29 @@ for step in traj:
 **What:** Patterns like `(?mi)^...overall...all...62...41...21...66.1...` have hardcoded counts that break when data changes
 **Fix:** String replacement of specific old→new numbers, but must handle multiple replacements carefully (e.g., "21" could be subjects OR control count)
 
+## FINDINGS 28-30: bus-b50 pipeline rejection (Sep 22, 2026)
+
+### FINDING 28 — Anti-hedge regex doesn't recognize negation
+**Portal:** bus-b50 v7 pipeline rejection (evaluation-fbdee40c410e4f93)
+**Check:** `memo_conversion_effect_exactly_one` (not_regex_match)
+**What:** The anti-hedge pattern only recognizes `{or/alternatively/possibly/either/maybe/perhaps| /}` but NOT negation patterns like "not X but Y", "X rather than Y", "instead of", "but not", "except"
+**Why it was rejected:** A memo stating "The shortfall is not 27651 but 28000" would NOT be caught by the anti-hedge, allowing a hedged figure to pass
+**Fix:** Add negation vocabulary to the hedge detection regex: `not\s+\w+\s+but|rather\s+than|instead\s+of|but\s+not|except`
+**Detection pattern:** Any `not_regex_match` anti-hedge check should test against negation patterns, not just conjunction/adverb patterns
+
+### FINDING 29 — Memo figure matcher brittleness to negation context
+**Portal:** bus-b50 v7 pipeline rejection
+**Check:** `memo_conversion_effect` (regex_match)
+**What:** The figure matcher requires the number near the label, but doesn't check whether the sentence negates the figure. "The conversion effect is not 27651" matches because the number is near the label, but the sentence says it's NOT that value.
+**Why it was rejected:** Pipeline flagged as `brittle_prose_matcher` — the matcher doesn't distinguish "is X" from "is not X"
+**Fix:** Either (a) add a negation guard in the regex, or (b) accept that the anti-hedge check handles this (but only if it recognizes negation per Finding 28), or (c) move figure matching to a custom pytest check that can read context
+
+### FINDING 30 — Pipeline rejection for memo regex brittleness is NOT dismissable
+**Portal:** bus-b50 v7 pipeline rejection
+**What:** The pipeline rejected the task for `brittle_prose_matcher` and `shallow_prose_grading` on the memo regexes. This is NOT a PreQC finding — it's a Harbor Check finding from the pipeline final QC. PreQC was clean (0 findings), but the pipeline's Harbor Check still caught it.
+**Lesson:** PreQC clean does NOT mean the pipeline will accept. The pipeline's Harbor Check uses a different (deeper) review than PreQC. Memo regexes that pass PreQC can still be rejected by the pipeline.
+**Fix:** Before uploading, run the local judge WITH model stage. The model stage catches negation-blindness that the deterministic PreQC misses. If the model stage flags `brittle_prose_matcher`, fix the regex before uploading.
+
 ### FINDING 28 — File write tools can introduce UTF-8 BOM into Dockerfile
 **Local QC:** h34
 **What:** The `write` tool (and some editors) add a UTF-8 BOM (EF BB BF) to the start of files. The portal PreQC flags "environment/Dockerfile starts with a UTF-8 BOM" as a major finding. Docker builds may also fail on some platforms with BOM.
