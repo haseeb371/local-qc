@@ -8,7 +8,7 @@ import { randomUUID } from 'crypto';
 import os from 'os';
 
 const execFileAsync = promisify(execFile);
-const JUDGE = 'C:\\Users\\Haseeb Mirza\\Documents\\local-qc\\scripts\\judge.py';
+const JUDGE = 'C:\\Users\\Haseeb Mirza\\Documents\\Default Project\\local-qc\\scripts\\judge.py';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
