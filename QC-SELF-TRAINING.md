@@ -509,6 +509,32 @@ for step in traj:
 **Lesson:** PreQC clean does NOT mean the pipeline will accept. The pipeline's Harbor Check uses a different (deeper) review than PreQC. Memo regexes that pass PreQC can still be rejected by the pipeline.
 **Fix:** Before uploading, run the local judge WITH model stage. The model stage catches negation-blindness that the deterministic PreQC misses. If the model stage flags `brittle_prose_matcher`, fix the regex before uploading.
 
+## FINDINGS 31-34: bus-b50 v2 Harbor Check blockers (Sep 22, 2026)
+
+### FINDING 31 — Fractional target produces non-whole shortfall (rule contradiction)
+**Portal:** bus-b50 v2 Harbor Check blocker: `layer1_realism_leakage__domain_correctness`
+**What:** CH-36 has target=1.5 (planned=1, reach=1500, streams=1). Rule 1 says "every figure is a whole number of streams" but rule 4.3 says "target is not rounded." Shortfall = 1.5 - 1 = 0.5 — not whole, contradicting rule 1. Gold rounds to 0 but no rule says how.
+**Fix:** Add explicit rule 5.5: "The shortfall to target is rounded to the nearest whole number, halves toward zero, before the three parts are taken." This makes rule 1 and 4.3 consistent.
+**Detection pattern:** Any channel where `planned_placements × planned_reach × planned_streams / 1000` produces a fractional target. The shortfall will be fractional, contradicting rule 1 unless an explicit rounding rule exists.
+
+### FINDING 32 — Empty offer_type placement excluded by gold but not by rules
+**Portal:** bus-b50 v2 Harbor Check blocker: `layer1_realism_leakage__domain_correctness`
+**What:** CH-43 has PL-43001 with `offer_type=""` (empty string, not `guaranteed_streams`). Rules 2.1-2.6 only exclude `cancelled` and `guaranteed_streams`. The gold excluded it (counted=1) but a note-reading model counts it (counted=2). All 4 GLM runs failed on this row.
+**Fix:** Add rule 2.7: "A placement whose offer_type is empty is a promotional placement that is neither guaranteed nor organic, and is counted under 2.1." Update gold to match.
+**Detection pattern:** Any placement with empty/missing offer_type in placement_log.csv. Check whether the counting rules explicitly handle this case. If not, the gold and rules disagree.
+
+### FINDING 33 — Memo regex 160-char window too narrow (surface_form_brittleness)
+**Portal:** bus-b50 v2 Harbor Check blocker: `layer5_verifier_fairness_static__surface_form_brittleness`
+**What:** The memo_conversion_effect regex requires the figure within 160 chars of the label, with a sentence-end negative lookahead `(?![.!?](?:\s|$))`. A correct memo writing "The conversion effect was 40,557 streams." fails because the period after "was" breaks the window.
+**Fix:** Widen the window from 160 to 600 chars. Remove the sentence-end negative lookahead so any label-and-figure pair in the same section passes. Accept comma-formatted figures.
+**Detection pattern:** Any memo regex with `.{0,N}` proximity window. Test against: (a) figure separated from label by a clause, (b) figure in a Markdown heading, (c) figure with comma formatting. If any fails, the window is too narrow.
+
+### FINDING 34 — Memo has no semantic grading (coverage_depth / shallow_prose_grading)
+**Portal:** bus-b50 v2 Harbor Check blocker: `layer5_verifier_fairness_static__coverage_depth`
+**What:** The memo deliverable (campaign_review.md) has 7 checks but all are existence, length, keyword, figure, and anti-hedge. No LLM judge or rubric checks whether the memo actually explains the findings. A token dump of "CH-04 conversion effect 40557. Counted placements 102. shortfall channel stream placement reach..." passes all 7 checks.
+**Fix:** Either (a) add an LLM judge rubric for the memo, or (b) accept this as a known limitation and document it in review.csv. The pipeline may still flag this as `shallow_prose_grading` — if it does, adding a semantic check is the only fix.
+**Detection pattern:** Count the checks on the prose deliverable. If all are regex_match/not_regex_match with no LLM rubric, a token dump passes. The Harbor Check will flag this as `shallow_prose_grading`.
+
 ### FINDING 28 — File write tools can introduce UTF-8 BOM into Dockerfile
 **Local QC:** h34
 **What:** The `write` tool (and some editors) add a UTF-8 BOM (EF BB BF) to the start of files. The portal PreQC flags "environment/Dockerfile starts with a UTF-8 BOM" as a major finding. Docker builds may also fail on some platforms with BOM.
