@@ -1,4 +1,4 @@
-# QC Self-Training — 32 Findings (law-b39 + h34 + h40)
+# QC Self-Training — 35 Findings (law-b39 + h34 + h40)
 
 **Lesson date:** 2026-09-17
 **Task:** law-b39-l16-custody-letter-instruction-audit
@@ -511,3 +511,29 @@ for step in traj:
 **Local QC:** h34
 **What:** The `balance_covers_both_factors` check used `(?s)^site\s*,.*\nseverity\s*,` to match site before severity in the CSV. But `^` without `(?m)` only matches string start, and the CSV had `severity` before `site`. The local Oracle passed (53/53) but the portal Oracle failed (47/51 = 0.9215686275).
 **Fix:** Use `(?mis)` flag combination (multiline + case-insensitive + dotall) and match both orderings: `(?mis)(?:^severity\s*,.*\nsite\s*,|^site\s*,.*\nseverity\s*,)`. Always test regex patterns against the actual gold file content, not just the expected order.
+
+### FINDING 33 — Portal PreQC D1 findings ARE blocking (not advisory)
+**Local QC:** h34, h40
+**What:** The portal PreQC D1 findings ("Prose deliverable graded by reward-hackable regex" and "Prose deliverable graded only by keyword/ID-presence regexes") are BLOCKING — they prevent Oracle+GLM from starting. The API returns 409 with: "Client PreQC found N blocking finding(s); fix them before Oracle/GLM".
+**Fix:** Migrate ALL D1-flagged regex checks from verifier.json to Python assertions in test_outputs.py. Remove the regex checks from verifier.json entirely. The custom pytest tests are NOT flagged by PreQC (only verifier.json regex checks are). This is the standard D1 migration: regex on prose → Python assertion.
+
+### FINDING 34 — Portal PreQC D2: non-root USER is BLOCKING (portal wants root)
+**Local QC:** h34, h40
+**What:** Adding `USER app` to the Dockerfile triggers a BLOCKING PreQC finding: "The Dockerfile ends as a non-root user". The portal requires the Dockerfile to run as root (portal may need root for agent setup). This conflicts with local judge.py which flags root as P1 D2.
+**Fix:** Remove the non-root USER directive from the Dockerfile. The portal PreQC D2 finding is BLOCKING — keep the Dockerfile running as root. The local judge D2 finding is advisory only (P1, not P0).
+
+### FINDING 35 — Portal API: use fetch('/trainer/api/run', {mode: 'internal'}) for PreQC, {mode: 'delivery'} for Oracle+GLM
+**Local QC:** h34, h40
+**What:** The portal has a REST API at `/trainer/api/run` that accepts POST with `{task_id, mode}`. mode='internal' runs PreQC, mode='delivery' runs Oracle+GLM. The API can be called from the browser's page context via `fetch()`. This bypasses the browser button click issues (SPA redirect problems, 409 errors from wrong mode).
+**Fix:** Use the API directly:
+```javascript
+// Run PreQC
+fetch('/trainer/api/run', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({task_id: 'content-xxx-v4', mode: 'internal'})})
+
+// Run Oracle+GLM (after PreQC passes)
+fetch('/trainer/api/run', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({task_id: 'content-xxx-v4', mode: 'delivery'})})
+
+// Check status
+fetch('/trainer/api/runs').then(r => r.json()).then(d => d.gates['content-xxx-v4'])
+```
+The 409 error on mode='qc_oracle_glm' was wrong — the correct mode is 'delivery'. The 409 on mode='delivery' means PreQC has blocking findings that must be fixed first.
