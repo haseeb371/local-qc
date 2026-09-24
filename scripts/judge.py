@@ -969,7 +969,9 @@ def check_harbor_check_heuristics(task_dir, findings):
         to_text = read_text(test_outputs)
         test_count = len(re.findall(r'^def test_', to_text, re.MULTILINE))
         verifier_count = len(checks)
-        undeclared = test_count - 1  # minus test_deliverable
+        # Check if standalone tests are declared as pytest_* entries
+        pytest_declared = sum(1 for c in checks if c['name'].startswith('pytest_'))
+        undeclared = (test_count - 1) - pytest_declared  # minus test_deliverable and declared entries
         if undeclared > 0:
             findings.add("P2", "harbor", f"Undeclared pytest tests: {undeclared} standalone (Harbor Check: declared_executed_consistency)",
                          label="harbor_check",
