@@ -66,6 +66,8 @@ TEXT_EXTS = {
     ".ts", ".js", ".cfg", ".ini", ".ps1",
 }
 PROSE_EXTS = {".md", ".txt", ".rst", ".markdown"}
+# Extensionless files that are still text and must be CRLF/BOM-scanned.
+TEXT_NAMES = {"Dockerfile", "Makefile", "makefile", ".dockerignore", ".gitignore", ".env"}
 
 DOCKER_COPY = re.compile(r"^\s*(?:COPY|ADD)\s+(?:--[\w=-]+\s+)*(.+?)\s*$", re.I)
 DOCKER_USER = re.compile(r"^\s*USER\s+(\S+)", re.I)
@@ -248,7 +250,7 @@ def find_task_dir(root):
 def scan_crlf_bom(task_dir, findings):
     bom_files, crlf_files = [], []
     for path in sorted(task_dir.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in TEXT_EXTS:
+        if not path.is_file() or (path.suffix.lower() not in TEXT_EXTS and path.name not in TEXT_NAMES):
             continue
         raw = read_bytes(path)
         if not raw:
@@ -503,10 +505,11 @@ def check_review_csv_vs_gold(task_dir, findings):
         label = str(row.get("review_check") or row.get("check") or "?")
         for m in re.finditer(r"\b(\d{2,5})\s+(?:deterministic\s+)?(?:checks|verifiers|lines|rows|items|findings|entries)\b", blob, re.I):
             claimed = int(m.group(1))
-            for tname, actual in gold_targets:
-                if claimed != actual:
-                    mismatches.append(f"{label}: claims {claimed} vs gold {tname}={actual}")
-                    break
+            # Only flag when the claimed count matches NO gold target (not just
+            # the first). Otherwise valid gold values like a CSV row count are
+            # falsely mismatched against an unrelated gold key.
+            if not any(claimed == actual for _, actual in gold_targets):
+                mismatches.append(f"{label}: claims {claimed} (matches no gold value)")
     if mismatches:
         findings.add("P2", "judge", "review.csv count claims do not match the actual gold",
                      label="packaging", observed_fact="; ".join(dict.fromkeys(mismatches))[:600],
@@ -681,11 +684,14 @@ def run_d1_d5_linter(task_dir, findings):
                 user_match = m.group(1)
                 break
         if not user_match or user_match.lower() in ("root", "0"):
-            add_lint("D2", "sev1", "Dockerfile runs the agent as root (no non-root USER directive)",
+            # D2 is advisory (sev3): platform PreQC often REQUIRES root (QC1-3).
+            # Per QC-SELF-TRAINING Finding 7, platform PreQC is the authority;
+            # local QC must not force a non-root USER that the platform rejects.
+            add_lint("D2", "sev3", "Dockerfile runs the agent as root (no non-root USER directive)",
                      label="environment", gate="d1d5:D2", fix_path="environment/Dockerfile",
                      observed_fact=f"USER={user_match or 'root'}",
                      evidence=["environment/Dockerfile"],
-                     recommended_fix="Add a non-root USER directive (e.g. USER app).")
+                     recommended_fix="Follow platform PreQC guidance: keep root if it requires root, else add a non-root USER (e.g. USER app).")
 
     spec_text = read_text(spec_path) if spec_path.is_file() else ""
     harness_files = []
@@ -1020,7 +1026,7 @@ def render_report(task_name, zip_path, det, model, extra_findings, all_findings,
     lines.append(f"Deterministic stage : {det_state}  qc_verdict={det_verdict}  counts={det_counts}")
     if model is not None:
         if model.get("ok"):
-            mc = model["report"]
+            mc = model.get("report", {})
             lines.append(f"Model stage         : ran  qc_verdict={mc.get('qc_verdict','n/a')}  "
                          f"review={mc.get('review_verdict','n/a')}  counts={mc.get('counts',{})}")
         else:
@@ -1046,7 +1052,7 @@ def render_report(task_name, zip_path, det, model, extra_findings, all_findings,
     if det and det.get("ok"):
         lines.append(f"  Engine review_verdict: {det.get('review_verdict','n/a')}")
     if model and model.get("ok"):
-        lines.append(f"  Model  review_verdict: {model['report'].get('review_verdict','n/a')}")
+        lines.append(f"  Model  review_verdict: {model.get('report', {}).get('review_verdict','n/a')}")
     lines.append("")
     live = [f for f in all_findings if not f.get("duplicate_of")]
     order = {"P0": 0, "P1": 1, "P2": 2, "INFO": 3}
