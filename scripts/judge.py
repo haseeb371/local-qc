@@ -639,21 +639,42 @@ def run_d1_d5_linter(task_dir, findings):
                     if c["comparison"] in ("regex_match", "not_regex_match")
                     and isinstance(c["expected"], str) and _is_prose(c)]
 
+    # D1 broad: ANY regex_match (not not_regex_match) on a .md/prose file
+    # with < 2 substantive content tokens is a "reward-hackable regex" per
+    # portal PreQC QC1. The portal flags heading-only, length-only, and
+    # format-only patterns even when they contain entity IDs (B-02 etc.)
+    # — IDs are not content words. not_regex_match (absence checks) are NOT
+    # flagged by the portal — only positive regex_match is.
+    _d1_seen_names = set()
+    for c in regex_checks:
+        if c["name"] in _d1_seen_names:
+            continue
+        if c["comparison"] != "regex_match":
+            continue
+        ntok = len(tokens_of(c["expected"]))
+        if ntok < 2:
+            _d1_seen_names.add(c["name"])
+            add_lint("D1", "sev1",
+                     f"prose check {c['name']} grades a prose target ({c['path']}) with regex_match but no required content words ({ntok} token(s))",
+                     observed_fact=f"pattern={c['expected'][:120]}",
+                     evidence=[rel(spec_path, task_dir)],
+                     recommended_fix="Replace with an LLM rubric on content, a key-fact set-membership check, or move to a filesystem check_path_exists.")
+
     for c in regex_checks:
         exp = c["expected"]
-        if re.search(r"\{\d{2,}\}", exp) and len(tokens_of(exp)) < 2:
+        if re.search(r"\{\d{2,}\}", exp) and len(tokens_of(exp)) < 2 and c["name"] not in _d1_seen_names:
             add_lint("D1", "sev2",
                      f"prose check {c['name']} uses a length-only quantifier with no required content words",
                      observed_fact=f"regex: {exp[:120]}",
                      evidence=[rel(spec_path, task_dir)],
                      recommended_fix="Replace with an LLM rubric on content, or require substantive tokens.")
-        if exp.count("(?=") >= 2:
+        if exp.count("(?=") >= 2 and c["name"] not in _d1_seen_names:
             add_lint("D1", "sev2",
                      f"prose check {c['name']} uses >= 2 independent lookaheads (keyword-set membership, order/coherence ungraded)",
                      observed_fact=f"regex: {exp[:120]}",
                      evidence=[rel(spec_path, task_dir)],
                      recommended_fix="Replace with an LLM rubric or bind tokens to assertions.")
-        if ".*" in exp or re.search(r"\.\{0,\d*\}", exp):
+        if (".*" in exp or re.search(r"\.\{0,\d*\}", exp) or re.search(r"\.\{\d+,\}", exp)) and c["name"] not in _d1_seen_names:
             add_lint("D1", "sev2",
                      f"prose check {c['name']} uses .* / .{{0,N}} slack letting arbitrary filler satisfy it",
                      observed_fact=f"regex: {exp[:120]}",
@@ -662,7 +683,7 @@ def run_d1_d5_linter(task_dir, findings):
 
     by_file = defaultdict(list)
     for c in regex_checks:
-        if ".*" in c["expected"] or "(?=" in c["expected"] or re.search(r"\{", c["expected"]):
+        if ".*" in c["expected"] or "(?=" in c["expected"] or re.search(r"\{", c["expected"]) or c["name"] in _d1_seen_names:
             continue
         if len(tokens_of(c["expected"])) >= 1:
             by_file[Path(c["path"]).name].append(c["name"])
@@ -764,6 +785,23 @@ def run_d1_d5_linter(task_dir, findings):
                  observed_fact=f"state weight={weight_map.get('state')}, no snapshot mode, empty diff",
                  evidence=[rel(spec_path, task_dir)],
                  recommended_fix="Populate the state axis or set its weight to 0.")
+
+    # PF9: task.toml artifacts must be absolute container paths (e.g. /app/...)
+    toml_path = task_dir / "task.toml"
+    if toml_path.is_file():
+        toml_text = read_text(toml_path)
+        m = re.search(r'^\s*artifacts\s*=\s*\[([^\]]*)\]', toml_text, re.M)
+        if m:
+            raw = m.group(1)
+            arts = [a.strip().strip('"').strip("'") for a in raw.split(",") if a.strip().strip('"').strip("'")]
+            rel_arts = [a for a in arts if not a.startswith("/")]
+            if rel_arts:
+                add_lint("PF9", "sev1",
+                         "task.toml lists artifacts as relative paths",
+                         label="packaging", gate="d1d5:PF9", fix_path="task.toml",
+                         observed_fact=f"relative: {', '.join(rel_arts[:6])}",
+                         evidence=["task.toml"],
+                         recommended_fix='Write each artifact as the absolute container path the deliverable is created at, e.g. "/app/brief_coherence.csv".')
 
 
 # --------------------------------------------------------------------------
