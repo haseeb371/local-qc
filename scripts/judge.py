@@ -890,6 +890,150 @@ def check_empty_offer_type_gap(task_dir, findings):
 
 
 # --------------------------------------------------------------------------
+# extra check 11: Harbor Check heuristics (catch what the portal Harbor Check finds)
+# --------------------------------------------------------------------------
+
+def check_harbor_check_heuristics(task_dir, findings):
+    """Heuristic checks that approximate the portal's Harbor Check findings."""
+    import json as _json
+
+    instruction = task_dir / "instruction.md"
+    verifier_path = task_dir / "tests" / "verifier.json"
+    if not instruction.is_file() or not verifier_path.is_file():
+        return
+
+    instr_text = read_text(instruction).lower()
+    spec = load_json(verifier_path)
+    if not isinstance(spec, dict):
+        return
+
+    checks, _ = _parse_spec_checks(spec)
+    check_names = {c["name"] for c in checks}
+
+    # 1. Instruction↔verifier consistency: deliverables with only existence checks
+    deliverables = set(re.findall(r'`([a-z_]+\.[a-z]{2,4})`', instr_text))
+    for deliverable in deliverables:
+        relevant = [c for c in checks if deliverable in str(c.get("path", ""))]
+        if relevant and all(c["comparison"] == "equals" and c["expected"] is True for c in relevant):
+            findings.add("P2", "harbor", f"Deliverable {deliverable} only has existence checks (Harbor Check: instruction_verifier_consistency)",
+                         label="harbor_check",
+                         observed_fact=f"Instruction mentions {deliverable} but verifier only checks existence",
+                         evidence=[str(verifier_path.relative_to(task_dir))],
+                         impact="Portal Harbor Check will flag: instruction requires content but verifier only checks file exists.",
+                         recommended_fix="Add content checks for the deliverable.",
+                         gate="harbor_check", fix_path=str(verifier_path.relative_to(task_dir)))
+
+    # 2. Shallow prose grading: short unanchored regex on prose
+    for c in checks:
+        if c.get("file_type") in ("md", "text") and c["comparison"] == "regex_match":
+            expected = str(c.get("expected", ""))
+            if len(expected) < 100 and not expected.startswith("(?m"):
+                findings.add("P2", "harbor", f"Shallow prose grading on {c['path']} (Harbor Check: coverage_depth)",
+                             label="harbor_check",
+                             observed_fact=f"Check {c['name']} uses short unanchored regex on prose",
+                             evidence=[str(verifier_path.relative_to(task_dir))],
+                             impact="Keyword-stuffed stub passes without real content.",
+                             recommended_fix="Add pytest assertion verifying specific content.",
+                             gate="harbor_check", fix_path=str(verifier_path.relative_to(task_dir)))
+
+    # 3. Undisclosed tokens in pytest assertions (requirement_traceability)
+    test_outputs = task_dir / "tests" / "test_outputs.py"
+    if test_outputs.is_file():
+        to_text = read_text(test_outputs)
+        token_checks = re.findall(r'assert\s+["\']([^"\']+)["\']\s+in\s+memo', to_text)
+        for token in token_checks:
+            if token.lower() not in instr_text:
+                findings.add("P2", "harbor", f"Undisclosed token '{token}' in pytest (Harbor Check: requirement_traceability)",
+                             label="harbor_check",
+                             observed_fact=f"test_outputs.py requires '{token}' but instruction doesn't mention it",
+                             evidence=[str(test_outputs.relative_to(task_dir))],
+                             impact="Portal will flag: verifier requires a token the instruction never discloses.",
+                             recommended_fix="Remove token or add to instruction.",
+                             gate="harbor_check", fix_path=str(test_outputs.relative_to(task_dir)))
+
+    # 4. State spoofing: test.sh without -I flag
+    test_sh = task_dir / "tests" / "test.sh"
+    if test_sh.is_file():
+        sh_text = read_text(test_sh)
+        if "python3 -m pytest" in sh_text and "-I" not in sh_text:
+            findings.add("P1", "harbor", "test.sh runs pytest without -I (Harbor Check: state_spoofing)",
+                        label="harbor_check",
+                        observed_fact="python3 -m pytest without -I allows workspace import hijack",
+                        evidence=[str(test_sh.relative_to(task_dir))],
+                        impact="Agent can write pytest.py and earn 1.0 without grading.",
+                        recommended_fix="Change to: python3 -I -m pytest",
+                        gate="harbor_check", fix_path=str(test_sh.relative_to(task_dir)), blocks="rework")
+
+    # 5. Declared vs executed verifier count
+    if test_outputs.is_file():
+        to_text = read_text(test_outputs)
+        test_count = len(re.findall(r'^def test_', to_text, re.MULTILINE))
+        verifier_count = len(checks)
+        undeclared = test_count - 1  # minus test_deliverable
+        if undeclared > 0:
+            findings.add("P2", "harbor", f"Undeclared pytest tests: {undeclared} standalone (Harbor Check: declared_executed_consistency)",
+                         label="harbor_check",
+                         observed_fact=f"verifier.json has {verifier_count} but pytest runs {verifier_count + undeclared} ({undeclared} undeclared)",
+                         evidence=[str(verifier_path.relative_to(task_dir)), str(test_outputs.relative_to(task_dir))],
+                         impact="Portal will flag: declared count doesn't match executed count.",
+                         recommended_fix=f"Add {undeclared} declared entries in verifier.json.",
+                         gate="harbor_check", fix_path=str(verifier_path.relative_to(task_dir)))
+
+    # 6. Giant regex with >100 lookaheads (portal regex limit)
+    for c in checks:
+        if c["comparison"] == "regex_match":
+            expected = str(c.get("expected", ""))
+            lookahead_count = expected.count("(?=")
+            if lookahead_count > 100:
+                findings.add("P1", "harbor", f"Giant regex {lookahead_count} lookaheads in {c['name']} (portal regex limit)",
+                             label="harbor_check",
+                             observed_fact=f"{c['name']} has {lookahead_count} lookahead groups — portal regex engine fails",
+                             evidence=[str(verifier_path.relative_to(task_dir))],
+                             impact="Portal Oracle will fail (0.98xx score).",
+                             recommended_fix="Remove giant regex, use Python assertion instead.",
+                             gate="harbor_check", fix_path=str(verifier_path.relative_to(task_dir)), blocks="rework")
+
+    # 7. golden_results.json vs results.json mismatch
+    golden_results = task_dir / "solution" / "golden_results.json"
+    results_json = task_dir / "solution" / "files" / "results.json"
+    if not results_json.is_file():
+        for p in task_dir.rglob("results.json"):
+            if "solution" in str(p):
+                results_json = p
+                break
+    if golden_results.is_file() and results_json.is_file():
+        gr = load_json(golden_results)
+        rj = load_json(results_json)
+        if isinstance(gr, dict) and isinstance(rj, dict):
+            for key in set(gr.keys()) | set(rj.keys()):
+                if gr.get(key) != rj.get(key):
+                    findings.add("P2", "harbor", f"golden_results.json mismatch: {key}={gr.get(key)} vs results.json={rj.get(key)}",
+                                 label="harbor_check",
+                                 observed_fact=f"golden_results.json {key}={gr.get(key)} != results.json {key}={rj.get(key)}",
+                                 evidence=[str(golden_results.relative_to(task_dir)), str(results_json.relative_to(task_dir))],
+                                 impact="Portal will flag: stale golden results.",
+                                 recommended_fix="Update golden_results.json to match results.json.",
+                                 gate="harbor_check", fix_path=str(golden_results.relative_to(task_dir)))
+
+    # 8. README count mismatch
+    readme = task_dir / "README.md"
+    if readme.is_file():
+        readme_text = read_text(readme)
+        # Find "N checks" or "N verifiers" claims
+        count_claims = re.findall(r'(\d+)\s+(?:deterministic\s+)?(?:checks|verifiers|pytest)', readme_text, re.I)
+        for claimed in count_claims:
+            claimed_int = int(claimed)
+            if claimed_int != verifier_count and abs(claimed_int - verifier_count) > 2:
+                findings.add("P2", "harbor", f"README claims {claimed_int} checks but verifier.json has {verifier_count}",
+                             label="harbor_check",
+                             observed_fact=f"README says {claimed_int} but verifier.json has {verifier_count}",
+                             evidence=[str(readme.relative_to(task_dir)), str(verifier_path.relative_to(task_dir))],
+                             impact="Portal will flag: README count doesn't match shipped verifier.",
+                             recommended_fix=f"Update README to say {verifier_count} checks.",
+                             gate="harbor_check", fix_path=str(readme.relative_to(task_dir)))
+
+
+# --------------------------------------------------------------------------
 # run the Harbor-Shannon QC engine
 # --------------------------------------------------------------------------
 
@@ -1199,6 +1343,7 @@ def main(argv=None):
         check_review_csv_structure(task_dir, extra)
         check_fractional_target_contradiction(task_dir, extra)
         check_empty_offer_type_gap(task_dir, extra)
+        check_harbor_check_heuristics(task_dir, extra)
         log(f"extra checks: {len(extra.items)} findings")
 
         dedup_extra(extra.items, engine_findings)
