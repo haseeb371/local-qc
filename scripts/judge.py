@@ -1069,8 +1069,103 @@ def check_harbor_check_heuristics(task_dir, findings):
                              observed_fact=f"README says {claimed_int} but verifier.json has {verifier_count}",
                              evidence=[str(readme.relative_to(task_dir)), str(verifier_path.relative_to(task_dir))],
                              impact="Portal will flag: README count doesn't match shipped verifier.",
-                             recommended_fix=f"Update README to say {verifier_count} checks.",
-                             gate="harbor_check", fix_path=str(readme.relative_to(task_dir)))
+                              recommended_fix=f"Update README to say {verifier_count} checks.",
+                              gate="harbor_check", fix_path=str(readme.relative_to(task_dir)))
+
+    # 9. Sanctioned interface use: Dockerfile runs as root (agent can read /tests/)
+    df = task_dir / "environment" / "Dockerfile"
+    if df.is_file():
+        dft = read_text(df)
+        has_user = bool(re.search(r"^\s*USER\s+\S", dft, re.MULTILINE))
+        if not has_user:
+            findings.add("P2", "harbor", "Dockerfile runs as root — agent can read /tests/verifier.json (Harbor Check: sanctioned_interface_use)",
+                         label="harbor_check",
+                         observed_fact="No non-root USER directive — agent has root access to /tests/",
+                         evidence=[str(df.relative_to(task_dir))],
+                         impact="Portal Harbor Check will flag: agent can reverse-engineer deliverables from verifier answer key.",
+                         recommended_fix="Note: PreQC blocks non-root USER. Mark as false positive if PreQC requires root.",
+                         gate="harbor_check", fix_path=str(df.relative_to(task_dir)))
+
+    # 10. Aggregation normalization: duplicate entries in verifier.json
+    seen_sources = {}
+    for c in checks:
+        src_key = str(c.get("path", "")) + str(c.get("comparison", "")) + str(c.get("expected", ""))
+        if src_key in seen_sources:
+            findings.add("P2", "harbor", f"Duplicate verifier entry: {c['name']} duplicates {seen_sources[src_key]} (Harbor Check: aggregation_normalization)",
+                         label="harbor_check",
+                         observed_fact=f"{c['name']} and {seen_sources[src_key]} check the same source with the same assertion",
+                         evidence=[str(verifier_path.relative_to(task_dir))],
+                         impact="Portal Harbor Check will flag: duplicate existence checks inflate partial-submission reward.",
+                         recommended_fix=f"Remove one of the duplicate entries or make them check different things.",
+                         gate="harbor_check", fix_path=str(verifier_path.relative_to(task_dir)))
+        else:
+            seen_sources[src_key] = c["name"]
+
+    # 11. Coverage depth: instruction mentions time values but memo check doesn't require them
+    if instr_text:
+        # Check if instruction mentions specific time values (30, 60, 240, 480 minutes)
+        time_values = re.findall(r'\b(30|60|240|480)\s*(?:min|minute)', instr_text)
+        if time_values and test_outputs.is_file():
+            to_text = read_text(test_outputs)
+            # Check if any memo test requires these time values
+            for tv in set(time_values):
+                if tv not in to_text.lower():
+                    findings.add("P2", "harbor", f"Instruction mentions {tv} minutes but memo check doesn't require it (Harbor Check: coverage_depth)",
+                                 label="harbor_check",
+                                 observed_fact=f"Instruction mentions {tv} minutes but test_outputs.py doesn't check for it in memo",
+                                 evidence=[str(instruction.relative_to(task_dir)), str(test_outputs.relative_to(task_dir))],
+                                 impact="Portal Harbor Check will flag: memo can pass without mentioning required time windows.",
+                                 recommended_fix=f"Add a memo check that requires '{tv}' to appear in the memo.",
+                                 gate="harbor_check", fix_path=str(test_outputs.relative_to(task_dir)))
+
+    # 12. Surface form: instruction mentions prose forms but matcher doesn't accept them
+    if instr_text and test_outputs.is_file():
+        to_text = read_text(test_outputs).lower()
+        # Check for "prose forms such as" in instruction
+        prose_match = re.search(r'prose forms such as\s+["\']([^"\']+)["\']', instr_text)
+        if prose_match:
+            prose_form = prose_match.group(1).lower()
+            # Check if the prose form (with space instead of underscore) is accepted
+            prose_space = prose_form.replace("_", " ")
+            if prose_form not in to_text and prose_space not in to_text:
+                findings.add("P2", "harbor", f"Instruction accepts prose form '{prose_space}' but matcher doesn't (Harbor Check: surface_form_brittleness)",
+                             label="harbor_check",
+                             observed_fact=f"Instruction says prose form '{prose_space}' is acceptable but test_outputs.py doesn't accept it",
+                             evidence=[str(instruction.relative_to(task_dir)), str(test_outputs.relative_to(task_dir))],
+                             impact="Portal Harbor Check will flag: correct memo using instruction's accepted prose form is rejected.",
+                             recommended_fix=f"Add '{prose_space}' to the accepted forms in the memo check.",
+                             gate="harbor_check", fix_path=str(test_outputs.relative_to(task_dir)))
+
+    # 13. Per-row correctness: audit CSV has many rows but only spot-checked
+    if test_outputs.is_file():
+        to_text = read_text(test_outputs)
+        # Check if test_audit_covers_full_register exists but no per-row correctness check
+        has_full_register = "test_audit_covers_full_register" in to_text or "test_audit_covers_full_register" in to_text
+        has_per_row = "per_row" in to_text.lower() or "per-row" in to_text.lower()
+        if has_full_register and not has_per_row:
+            # Count spot-checked rows in verifier.json
+            spot_checked = sum(1 for c in checks if "row_r" in c["name"].lower() or "_findings" in c["name"].lower())
+            if spot_checked > 0 and spot_checked < 50:
+                findings.add("P2", "harbor", f"Only {spot_checked} rows spot-checked out of 609+ (Harbor Check: coverage_depth + requirement_traceability)",
+                             label="harbor_check",
+                             observed_fact=f"verifier.json spot-checks {spot_checked} rows; remaining rows validated only via aggregate counts",
+                             evidence=[str(verifier_path.relative_to(task_dir)), str(test_outputs.relative_to(task_dir))],
+                             impact="Portal Harbor Check will flag: swapped findings in unchecked rows pass undetected.",
+                             recommended_fix="Add per-row correctness checks that validate clock_start, minutes, and role for every row.",
+                             gate="harbor_check", fix_path=str(test_outputs.relative_to(task_dir)))
+
+    # 14. Acknowledgement_minutes empty for unapproved (instruction requirement)
+    if test_outputs.is_file() and instr_text:
+        to_text = read_text(test_outputs)
+        if "acknowledger_unapproved" in instr_text or "unapproved" in instr_text:
+            if "acknowledgement_minutes" not in to_text or "unapproved" not in to_text:
+                findings.add("P2", "harbor", "No check that acknowledgement_minutes is empty for unapproved acknowledgers (Harbor Check: requirement_traceability)",
+                             label="harbor_check",
+                             observed_fact="Instruction requires acknowledgement_minutes empty for unapproved, but no test checks this",
+                             evidence=[str(instruction.relative_to(task_dir)), str(test_outputs.relative_to(task_dir))],
+                             impact="Portal Harbor Check will flag: rows with non-empty acknowledgement_minutes for unapproved pass undetected.",
+                             recommended_fix="Add a check that acknowledgement_minutes is empty when findings include acknowledger_unapproved.",
+                             gate="harbor_check", fix_path=str(test_outputs.relative_to(task_dir)))
 
 
 # --------------------------------------------------------------------------
