@@ -805,6 +805,37 @@ def run_d1_d5_linter(task_dir, findings):
 
 
 # --------------------------------------------------------------------------
+# extra check 7b: D6-D22 verifier-defect linter (from harbor-pipeline repo)
+# --------------------------------------------------------------------------
+
+def run_d6_d22_linter(task_dir, findings):
+    """Run the full D6-D22 linter from the harbor-pipeline repo."""
+    pipeline_lint = Path(r"C:\Users\Haseeb Mirza\Documents\Default Project\haseeb-harbor-pipeline\tools\verifier_defect_lint.py")
+    if not pipeline_lint.is_file():
+        return
+    import subprocess
+    try:
+        result = subprocess.run(
+            [sys.executable, str(pipeline_lint), str(task_dir)],
+            capture_output=True, text=True, timeout=30, encoding="utf-8"
+        )
+        output = result.stdout + result.stderr
+        import re as _re
+        for line in output.split("\n"):
+            # Format: [BLOCK sev2] D13.no_rubric_for_prose  (file)
+            #      or [warn  sev1] D2.root_container  (-)
+            m = _re.match(r"\s*\[(?:BLOCK|warn)\s+sev(\d)\]\s+(D\d+\.\w+)\s+\((.*)\)", line)
+            if m:
+                sev_num, check_id, target = m.groups()
+                sev = "P1" if int(sev_num) >= 2 else "P2"
+                findings.add(sev, "d6d22", f"[{check_id}] {line.strip()[:120]}",
+                             evidence=[str(pipeline_lint)],
+                             recommended_fix="")
+    except Exception as exc:
+        log(f"D6-D22 linter error: {exc}")
+
+
+# --------------------------------------------------------------------------
 # extra check 8: review.csv structural validation (bus-b50 findings 45-47)
 # --------------------------------------------------------------------------
 
@@ -1314,7 +1345,7 @@ def render_report(task_name, zip_path, det, model, extra_findings, all_findings,
         key_set = bool(os.environ.get(ENV_KEY))
         lines.append(f"Model stage         : skipped ({'key not set' if not key_set else '--no-model'})")
     lines.append(f"Extra checks        : CRLF/BOM, gold-derivability, trajectory-freshness, "
-                  f"review.csv-vs-gold, /tests-lock, host-paths, D1-D5 linter")
+                  f"review.csv-vs-gold, /tests-lock, host-paths, D1-D22 linter")
     lines.append("")
     lines.append(bar)
     if verdict == "FAIL":
@@ -1475,6 +1506,7 @@ def main(argv=None):
         check_tests_lock_dockerfile(task_dir, extra)
         check_host_paths(task_dir, extra)
         run_d1_d5_linter(task_dir, extra)
+        run_d6_d22_linter(task_dir, extra)
         check_review_csv_structure(task_dir, extra)
         check_fractional_target_contradiction(task_dir, extra)
         check_empty_offer_type_gap(task_dir, extra)
